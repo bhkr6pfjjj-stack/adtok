@@ -69,6 +69,11 @@
       const interests = S.interests || Algo.DEFAULT_INTERESTS;
       const qs = [];
       if (forced) qs.push(forced);
+      else if (search.q) {
+        // mode recherche : uniquement ta recherche, et on va chercher plus loin à chaque recharge
+        qs.push(search.parsed);
+        search.max = Math.min(200, search.max + 40);
+      }
       else for (let i = 0; i < 3; i++) {
         const q = Algo.nextQuery(interests);
         const k = q.type === 'page' ? 'page:' + q.value : q.value;
@@ -78,21 +83,26 @@
       if (forced) Algo.markQuery(forced.type === 'page' ? 'page:' + forced.value : forced.value);
       const terms = qs.filter(q => q.type === 'term').map(q => q.value);
       const pages = qs.filter(q => q.type === 'page').map(q => q.value);
+      const links = qs.filter(q => q.type === 'url').map(q => q.value);
       const input = { country: S.country, mediaType: S.media, activeStatus: S.status, outputFormat: 'clean',
-        maxAds: forced ? 20 : 25, searchType: 'keyword_unordered' };
+        maxAds: forced ? 20 : search.q ? search.max : 25, searchType: 'keyword_unordered' };
       if (terms.length) input.searchTerms = terms;
-      if (pages.length) input.urls = pages.map(id => ({ url: pageLibraryUrl(id) }));
+      if (pages.length || links.length) input.urls = [...pages.map(id => ({ url: pageLibraryUrl(id) })), ...links.map(url => ({ url }))];
       if (S.sort === 'reach' && reachAvailable()) input.includeAdDetails = true;
       if (S.sort === 'recent') input.startDateMin = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
       const keyFor = (raw) => {
         const m = /view_all_page_id=(\d+)/.exec(raw.searchUrl || '');
         if (m && pages.includes(m[1])) return 'page:' + m[1];
         if (raw.searchTerm && terms.includes(raw.searchTerm)) return raw.searchTerm;
+        if (search.q && !forced) return 'search:' + search.q;
         return terms[0] || (pages[0] ? 'page:' + pages[0] : '');
       };
       try {
         const items = await apify(input);
-        const seenIds = new Set(await DB.keys('seen'));
+        // en recherche, on montre tout ce qui correspond (même déjà vu ailleurs), sauf ce qui est déjà dans ce feed
+        const seenIds = search.q && !forced
+          ? new Set(feedAds.flatMap(a => [a.id, a.dedup]))
+          : new Set(await DB.keys('seen'));
         const poolIds = new Set(await DB.keys('pool'));
         const fresh = [];
         const key = forced ? (forced.type === 'page' ? 'page:' + forced.value : forced.value) : qs.map(q => q.value).join(' + ');
@@ -103,9 +113,11 @@
           seenIds.add(ad.dedup);
           fresh.push(ad);
         }
+        // fin des résultats de la recherche : moins d'ads que demandé, ou plus rien de nouveau
+        if (search.q && !forced && fk === filterKey() && (items.length < input.maxAds || search.max >= 200)) search.exhausted = true;
         await tagShopify(fresh);
         await DB.putMany('pool', fresh);
-        return { query: key, count: fresh.length };
+        return { query: key, count: fresh.length, total: items.length };
       } finally {
         fetching = null;
       }
@@ -164,7 +176,31 @@
 
   function filterKey() {
     // la couverture n'est demandée qu'en tri "plus vues" : les autres tris partagent le même stock
-    return [S.country, S.status, S.media, S.sort === 'reach' ? 'reach' : S.sort === 'recent' ? 'recent' : 'std'].join('|');
+    return [S.country, S.status, S.media, S.sort === 'reach' ? 'reach' : S.sort === 'recent' ? 'recent' : 'std',
+      search.q ? 'q:' + search.q : ''].join('|');
+  }
+
+  // ---------- recherche ----------
+  // mot-clé ("sérum vitamine c"), lien d'une page Facebook / de la Ad Library, ou lien d'un site (on cherche son nom)
+  const search = { q: '', parsed: null, max: 0, exhausted: false };
+  function parseSearch(q) {
+    q = q.trim();
+    if (/^https?:\/\//i.test(q) || /^(www\.)?facebook\.com\//i.test(q)) {
+      try {
+        const u = new URL(/^https?:/i.test(q) ? q : 'https://' + q);
+        if (/(^|\.)facebook\.com$/.test(u.hostname)) {
+          // lien Ad Library : on applique nos filtres pays/statut/format par-dessus
+          if (u.pathname.startsWith('/ads/library')) {
+            const id = u.searchParams.get('view_all_page_id');
+            if (id) return { type: 'page', value: id };
+            if (u.searchParams.get('q')) return { type: 'term', value: u.searchParams.get('q') };
+          }
+          return { type: 'url', value: u.href };   // page Facebook d'une marque
+        }
+        return { type: 'term', value: u.hostname.replace(/^www\./, '') };
+      } catch {}
+    }
+    return { type: 'term', value: q };
   }
 
   async function apify(input) {
@@ -205,9 +241,12 @@
     const now = Date.now();
     const fresh = [], stale = [];
     // les liens vidéo Facebook expirent après quelques jours : on jette le stock trop vieux
-    // + on jette ce qui a été récupéré avec d'autres filtres (pays, statut, tri)
+    // les ads récupérées avec d'autres filtres (pays, statut, recherche…) restent en stock pour plus tard
     const fk = filterKey();
-    for (const ad of pool) (now - ad.fetchedAt > 1000 * 60 * 60 * 48 || (ad.filters && ad.filters !== fk) ? stale : fresh).push(ad);
+    for (const ad of pool) {
+      if (now - ad.fetchedAt > 1000 * 60 * 60 * 48) stale.push(ad);
+      else if (ad.filters === fk || (!ad.filters && !search.q)) fresh.push(ad);
+    }
     for (const ad of stale) DB.del('pool', ad.id);
     fresh.forEach(ad => ad._s = Algo.score(ad));
     const t = (ad) => (ad.startDate ? Date.parse(ad.startDate) : 0) || 0;
@@ -251,8 +290,9 @@
     try {
       let { picked, remaining } = await takeFromPool(6);
       let tries = 0;
-      while (picked.length < 3 && tries < 4) {
-        if (!feedAds.length) showStatus(`<div class="spinner"></div><div>Je cherche des ads pour toi…</div>`);
+      const maxTries = search.q ? 2 : 4;
+      while (picked.length < 3 && tries < maxTries && !(search.q && search.exhausted)) {
+        if (!feedAds.length) showStatus(`<div class="spinner"></div><div>${search.q ? `Je cherche « ${esc(search.q)} »…` : 'Je cherche des ads pour toi…'}</div>`);
         tries++;
         try { await fetchBatch(); } catch (e) {
           if (!feedAds.length) showStatus(`<div>⚠️ ${esc(e.message)}</div><button class="primary" id="retry">Réessayer</button>`);
@@ -263,12 +303,20 @@
       }
       hideStatus();
       picked.forEach(addSlide);
-      if (!feedAds.length) showStatus(S.shopify
-        ? `<div>Pas encore de boutique Shopify dans ces résultats.</div><button class="primary" id="retry">Chercher encore</button>`
-        : `<div>Aucune ad trouvée. Ajoute d'autres centres d'intérêt dans Réglages.</div>`);
+      if (!feedAds.length) {
+        if (search.q) showStatus(`<div>Aucune ad trouvée pour « ${esc(search.q)} » avec ces filtres.</div>
+          <button class="primary" id="end-search">Revenir à mon feed</button>`);
+        else showStatus(S.shopify
+          ? `<div>Pas encore de boutique Shopify dans ces résultats.</div><button class="primary" id="retry">Chercher encore</button>`
+          : `<div>Aucune ad trouvée. Ajoute d'autres centres d'intérêt dans Réglages.</div>`);
+        showTopbar(true);
+      } else if (search.q && search.exhausted && !picked.length && !remaining && !$('.end-card', feedEl)) {
+        addEndCard();
+      }
       $('#retry') && ($('#retry').onclick = () => refill());
+      $('#end-search') && ($('#end-search').onclick = () => setSearch(''));
       // on garde toujours un stock d'avance, récupéré en arrière-plan
-      if (remaining < 10) fetchBatch().catch(() => {});
+      if (remaining < 10 && !(search.q && search.exhausted)) fetchBatch().catch(() => {});
     } finally { filling = false; }
   }
 
@@ -563,6 +611,32 @@
   }
   let scrollT;
   feedEl.addEventListener('scroll', () => { clearTimeout(scrollT); scrollT = setTimeout(activateFeed, 90); }, { passive: true });
+
+  // Barre du haut : on avance dans le feed → elle se range ; on remonte → elle revient
+  const topbar = $('#topbar');
+  let lastTop = 0;
+  function showTopbar(show) { topbar.classList.toggle('hide', !show); }
+  feedEl.addEventListener('scroll', () => {
+    const y = feedEl.scrollTop;
+    if (y < 30) showTopbar(true);
+    else if (y > lastTop + 12) { showTopbar(false); $('#q').blur(); }
+    else if (y < lastTop - 12) showTopbar(true);
+    lastTop = y;
+  }, { passive: true });
+
+  function addEndCard() {
+    const el = document.createElement('div');
+    el.className = 'end-card';
+    el.innerHTML = `<div>C'est tout pour « ${esc(search.q)} » 🎉</div>
+      <button class="primary" data-a="new">Nouvelle recherche</button>
+      <button data-a="feed">Revenir à mon feed</button>`;
+    el.onclick = (e) => {
+      const a = e.target.closest('button'); if (!a) return;
+      if (a.dataset.a === 'feed') setSearch('');
+      else { showTopbar(true); $('#q').focus(); $('#q').select(); }
+    };
+    feedEl.appendChild(el);
+  }
   const observer = { observe() { if (!current) setTimeout(activateFeed, 0); }, unobserve() {} };
 
   // son
@@ -740,7 +814,6 @@
   // ======================================================================
   function renderSettings() {
     $('#set-token').value = S.token;
-    $('#set-media').value = S.media;
     $('#set-interests').value = (S.interests || Algo.DEFAULT_INTERESTS).join('\n');
     const terms = Algo.learnedTerms(24);
     $('#learned').innerHTML = terms.length
@@ -750,12 +823,9 @@
     $('#stats').textContent = `${p.events} interactions apprises · ${likedIds.size} likes · ${savedIds.size} enregistrées · ${Store.get('runs', 0)} lancements Apify (≈ ${(Store.get('runs', 0) * 0.1).toFixed(2).replace('.', ',')} $)`;
   }
   $('#save-settings').onclick = async () => {
-    const before = S.media;
     Store.set('token', $('#set-token').value.trim());
-    Store.set('media', $('#set-media').value);
     Store.set('interests', $('#set-interests').value.split('\n').map(s => s.trim()).filter(Boolean));
     toast('Réglages enregistrés');
-    if (before !== S.media) { await DB.clear('pool'); resetFeed(); }
   };
   $('#reset-algo').onclick = async () => {
     if (!confirm("Effacer ce que l'algo a appris et l'historique des ads vues ? Ton dossier et tes likes sont conservés.")) return;
@@ -798,9 +868,38 @@
   function resetFeed() {
     $$('.slide', feedEl).forEach(s => { unmount(s); observer.unobserve(s); });
     feedEl.innerHTML = ''; feedAds = []; current = null;
-    feedEl.scrollTop = 0;
+    feedEl.scrollTop = 0; lastTop = 0;
+    search.max = 0; search.exhausted = false;   // une recherche relancée avec d'autres filtres repart du début
+    showTopbar(true);
     refill();
   }
+
+  // ---------- recherche depuis la barre du haut ----------
+  function renderSearchChip() {
+    const chip = $('#search-chip');
+    $('#q-clear').classList.toggle('hidden', !$('#q').value);
+    if (!search.q) { chip.classList.add('hidden'); return; }
+    chip.innerHTML = `<span>Résultats pour <b>« ${esc(search.q)} »</b></span><button id="chip-back">✕ Mon feed</button>`;
+    chip.classList.remove('hidden');
+    $('#chip-back').onclick = () => setSearch('');
+  }
+  function setSearch(q) {
+    q = (q || '').trim();
+    search.q = q;
+    search.parsed = q ? parseSearch(q) : null;
+    $('#q').value = q;
+    if (q && search.parsed.type === 'term') Algo.boost(search.parsed.value); // ce que tu cherches t'intéresse
+    renderSearchChip();
+    resetFeed();
+  }
+  $('#search-form').onsubmit = (e) => {
+    e.preventDefault();
+    const q = $('#q').value.trim();
+    $('#q').blur();
+    if (q) setSearch(q); else if (search.q) setSearch('');
+  };
+  $('#q').addEventListener('input', () => $('#q-clear').classList.toggle('hidden', !$('#q').value));
+  $('#q-clear').onclick = () => { $('#q').value = ''; $('#q-clear').classList.add('hidden'); if (search.q) setSearch(''); else $('#q').focus(); };
 
   // ---------- filtres du feed : pays, tri, statut ----------
   const FILTERS = {
@@ -816,6 +915,9 @@
       ['oldest', '⏳ Plus anciennes', 'Celles qui tournent depuis le plus longtemps (souvent des winners)']] },
     status: { title: 'Statut', opts: [
       ['active', '🟢 Actives', 'En diffusion en ce moment'], ['inactive', '⏸ Inactives', 'Arrêtées'], ['all', '◐ Toutes', 'Actives et inactives']] },
+    media: { title: 'Format', opts: [
+      ['video', '🎬 Vidéos', 'Vidéos uniquement'], ['image', '🖼 Images', 'Images et carrousels d\'images uniquement'],
+      ['all', '🎞 Tout', 'Vidéos et images']] },
   };
   function label(kind) {
     const o = FILTERS[kind].opts.find(x => x[0] === S[kind]) || FILTERS[kind].opts[0];

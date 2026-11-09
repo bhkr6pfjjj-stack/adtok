@@ -20,14 +20,25 @@
   <!-- FEED -->
   <section id="view-feed" class="view active">
     <div id="feed" class="feed"></div>
-    <div class="filterbar">
-      <button id="f-country"></button>
-      <button id="f-sort"></button>
-      <button id="f-status"></button>
-      <button id="f-shopify" class="toggle">🛍 Shopify</button>
-    </div>
+    <header id="topbar" class="topbar">
+      <div class="searchrow">
+        <form id="search-form" class="searchbox" autocomplete="off">
+          <span class="lens">🔍</span>
+          <input id="q" type="search" enterkeyhint="search" placeholder="Rechercher : mot-clé, marque, lien…">
+          <button type="button" id="q-clear" class="q-clear hidden" aria-label="Effacer">✕</button>
+        </form>
+        <button id="mute-btn" class="mute-btn" aria-label="Son">🔇</button>
+      </div>
+      <div class="filterbar">
+        <button id="f-country"></button>
+        <button id="f-sort"></button>
+        <button id="f-status"></button>
+        <button id="f-media"></button>
+        <button id="f-shopify" class="toggle">🛍 Shopify</button>
+      </div>
+      <div id="search-chip" class="search-chip hidden"></div>
+    </header>
     <div id="feed-status" class="feed-status hidden"></div>
-    <button id="mute-btn" class="mute-btn" aria-label="Son">🔇</button>
   </section>
 
   <!-- DOSSIER -->
@@ -51,12 +62,6 @@
       <label>Token Apify
         <input id="set-token" type="password" autocomplete="off" placeholder="apify_api_...">
         <small>console.apify.com → Settings → API &amp; Integrations</small>
-      </label>
-      <label>Format
-        <select id="set-media">
-          <option value="video">Vidéos uniquement</option>
-          <option value="all">Vidéos + images</option>
-        </select>
       </label>
       <label>Mes centres d'intérêt <small>(un par ligne, ils servent de point de départ à l'algo)</small>
         <textarea id="set-interests" rows="6"></textarea>

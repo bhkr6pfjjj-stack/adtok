@@ -147,9 +147,17 @@ const Algo = (() => {
     save();
   }
 
+  // une recherche manuelle = un intérêt : l'algo la reproposera de temps en temps
+  function boost(term) {
+    for (const t of tokens(term)) bump(P.tok, t, 1.2);
+    const h = P.query[term] || (P.query[term] = { w: 0, n: 0 });
+    h.w = Math.min(20, (h.w || 0) + 2);
+    save();
+  }
+
   function reset() { P = { tok: {}, page: {}, domain: {}, cat: {}, query: {}, events: 0 }; save(); }
   function profile() { return P; }
   function setProfile(p) { P = p; save(); }
 
-  return { signal, score, nextQuery, markQuery, learnedTerms, reset, profile, setProfile, tokens, DEFAULT_INTERESTS, EXPLORE };
+  return { signal, score, nextQuery, markQuery, learnedTerms, reset, boost, profile, setProfile, tokens, DEFAULT_INTERESTS, EXPLORE };
 })();
