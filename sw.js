@@ -1,5 +1,5 @@
 // Garde l'appli elle-même dispo hors ligne (les vidéos ne passent pas par ici).
-const CACHE = 'adtok-v4';
+const CACHE = 'adtok-v5';
 const SHELL = ['./', 'index.html', 'style.css', 'db.js', 'algo.js', 'app.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener('activate', e => {

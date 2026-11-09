@@ -962,6 +962,14 @@
   function onboarding() {
     const ob = $('#onboarding');
     ob.classList.remove('hidden');
+    $('#ob-paste').onclick = async () => {
+      try {
+        const t = (await navigator.clipboard.readText()).trim();
+        if (!t) return toast('Presse-papiers vide');
+        $('#ob-token').value = t;
+        toast(t.startsWith('apify_api_') ? '✓ Clé collée' : "Collé, mais ça ne ressemble pas à une clé Apify");
+      } catch { toast('Appuie longuement dans le champ puis « Coller »'); }
+    };
     const chosen = new Set(Algo.DEFAULT_INTERESTS.slice(0, 3));
     const all = [...new Set([...Algo.DEFAULT_INTERESTS, ...Algo.EXPLORE])];
     const draw = () => {
@@ -978,7 +986,7 @@
       all.unshift(t); chosen.add(t); e.target.value = ''; draw();
     };
     $('#ob-go').onclick = () => {
-      const tok = $('#ob-token').value.trim();
+      const tok = $('#ob-token').value.trim().replace(/\s+/g, '');
       if (!tok) { toast('Colle ton token Apify'); return; }
       if (!chosen.size) { toast('Choisis au moins un intérêt'); return; }
       Store.set('token', tok);
@@ -994,6 +1002,13 @@
   }
 
   async function init() {
+    const hadToken = !!S.token;
+    await Store.restore();
+    if (!hadToken && S.token) {
+      // réglages récupérés depuis la copie de secours : on rafraîchit ce qui avait été lu au chargement
+      const p = Store.get('profile', null); if (p) Algo.setProfile(p);
+      renderFilterBar(); renderShopBtn();
+    }
     await loadSets();
     if (!S.token) onboarding(); else refill();
     if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});

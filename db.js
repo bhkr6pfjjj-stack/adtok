@@ -4,13 +4,16 @@ const DB = (() => {
   function open() {
     if (dbp) return dbp;
     dbp = new Promise((resolve, reject) => {
-      const req = indexedDB.open('adtok', 1);
-      req.onupgradeneeded = () => {
+      const req = indexedDB.open('adtok', 2);
+      req.onupgradeneeded = (e) => {
         const db = req.result;
-        db.createObjectStore('saved', { keyPath: 'id' });   // ads enregistrées (+ blob vidéo)
-        db.createObjectStore('liked', { keyPath: 'id' });   // ads likées
-        db.createObjectStore('seen', { keyPath: 'id' });    // ads déjà vues (pas de doublon)
-        db.createObjectStore('pool', { keyPath: 'id' });    // ads en attente d'être servies
+        if (e.oldVersion < 1) {
+          db.createObjectStore('saved', { keyPath: 'id' });   // ads enregistrées (+ images)
+          db.createObjectStore('liked', { keyPath: 'id' });   // ads likées
+          db.createObjectStore('seen', { keyPath: 'id' });    // ads déjà vues (pas de doublon)
+          db.createObjectStore('pool', { keyPath: 'id' });    // ads en attente d'être servies
+        }
+        if (e.oldVersion < 2) db.createObjectStore('kv', { keyPath: 'id' }); // réglages importants (copie de secours)
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
@@ -43,5 +46,25 @@ const Store = {
     try { const v = localStorage.getItem('adtok.' + key); return v == null ? fallback : JSON.parse(v); }
     catch { return fallback; }
   },
-  set(key, val) { try { localStorage.setItem('adtok.' + key, JSON.stringify(val)); } catch {} },
+  set(key, val) {
+    try { localStorage.setItem('adtok.' + key, JSON.stringify(val)); } catch {}
+    // la clé Apify et les réglages essentiels sont aussi copiés dans IndexedDB, au cas où l'un des deux serait vidé
+    if (Store.BACKUP.includes(key)) DB.put('kv', { id: key, v: val }).catch(() => {});
+  },
+  BACKUP: ['token', 'interests', 'country', 'status', 'sort', 'media', 'shopify', 'profile'],
+  // au démarrage : si localStorage a été vidé, on recopie depuis IndexedDB
+  async restore() {
+    try {
+      for (const row of await DB.all('kv')) {
+        if (localStorage.getItem('adtok.' + row.id) == null && row.v != null) localStorage.setItem('adtok.' + row.id, JSON.stringify(row.v));
+      }
+      // et dans l'autre sens : première fois après la mise à jour, on remplit la copie de secours
+      for (const k of Store.BACKUP) {
+        const v = localStorage.getItem('adtok.' + k);
+        if (v != null) await DB.put('kv', { id: k, v: JSON.parse(v) });
+      }
+    } catch {}
+    // demande à iOS / au navigateur de ne pas effacer les données de l'app
+    try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch {}
+  },
 };

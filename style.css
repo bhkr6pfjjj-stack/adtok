@@ -173,3 +173,6 @@ button.danger { border: 1px solid #5a1d27; color: #ff6b81; padding: 10px; border
   justify-content: center; gap: 12px; padding: 24px; text-align: center; font-size: 17px; }
 .end-card button { width: 100%; max-width: 280px; padding: 12px; border-radius: 10px; background: var(--card); }
 .end-card button.primary { background: var(--accent); }
+.paste-row { display: flex; gap: 8px; }
+.paste-row input { flex: 1; min-width: 0; }
+.paste-row button { flex: none; padding: 0 14px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); font-weight: 600; }
