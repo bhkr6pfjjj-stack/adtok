@@ -10,6 +10,7 @@
     get status() { return Store.get('status', 'active'); },   // active | inactive | all
     get sort() { return Store.get('sort', 'algo'); },         // algo | reach | recent | oldest
     get media() { return Store.get('media', 'video'); },
+    get shopify() { return Store.get('shopify', false); },
     get interests() { return Store.get('interests', null); },
     get muted() { return Store.get('muted', true); },
   };
@@ -102,6 +103,7 @@
           seenIds.add(ad.dedup);
           fresh.push(ad);
         }
+        await tagShopify(fresh);
         await DB.putMany('pool', fresh);
         return { query: key, count: fresh.length };
       } finally {
@@ -109,6 +111,55 @@
       }
     })();
     return fetching;
+  }
+
+  // ---------- détection Shopify ----------
+  // Un site Shopify pointe vers les serveurs Shopify (23.227.38.x ou shops.myshopify.com) : on interroge le DNS
+  // via DNS-over-HTTPS (gratuit, autorisé depuis une page web) et on garde le résultat en cache.
+  const NOT_STORE = /(^|\.)(facebook|fb|instagram|messenger|whatsapp|wa|apple|google|youtube|tiktok|amazon|linktr)\.(com|me|ee|fr)$/;
+  function storeHost(ad) {
+    let url = ad.linkUrl || '';
+    try {
+      let u = new URL(url);
+      if (/facebook\.com$/.test(u.hostname) && u.searchParams.get('u')) u = new URL(u.searchParams.get('u'));
+      return u.hostname.toLowerCase();
+    } catch { return (ad.linkDomain || '').toLowerCase(); }
+  }
+  async function dnsShopify(host) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 5000);
+    try {
+      const r = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=A`,
+        { headers: { accept: 'application/dns-json' }, signal: ctrl.signal });
+      const d = await r.json();
+      return (d.Answer || []).some(a => /^23\.227\.38\.\d+$/.test(a.data) || /myshopify\.com\.?$/.test(a.data));
+    } finally { clearTimeout(t); }
+  }
+  const shopCache = Store.get('shopifyCache', {});
+  async function isShopify(host) {
+    if (!host) return false;
+    if (host.endsWith('.myshopify.com')) return true;
+    if (NOT_STORE.test(host)) return false;
+    const c = shopCache[host];
+    if (c && Date.now() - c.t < 30 * 864e5) return c.v;
+    try {
+      let v = await dnsShopify(host);
+      // on teste aussi l'autre variante : certaines boutiques n'ont que le domaine nu (ou que www) chez Shopify
+      const alt = host.startsWith('www.') ? host.slice(4) : host.split('.').length === 2 ? 'www.' + host : null;
+      if (!v && alt) v = await dnsShopify(alt);
+      shopCache[host] = { v, t: Date.now() };
+      Store.set('shopifyCache', shopCache);
+      return v;
+    } catch { return null; } // DNS injoignable : inconnu
+  }
+  async function tagShopify(ads) {
+    const hosts = [...new Set(ads.map(storeHost))];
+    const res = {};
+    // 6 vérifications à la fois
+    for (let i = 0; i < hosts.length; i += 6) {
+      await Promise.all(hosts.slice(i, i + 6).map(async h => { res[h] = await isShopify(h); }));
+    }
+    for (const ad of ads) ad.shopify = res[storeHost(ad)] === true;
   }
 
   function filterKey() {
@@ -168,6 +219,8 @@
       oldest: (a, b) => (t(a) - t(b)) || (b._s - a._s),
     };
     fresh.sort(sorters[S.sort] || sorters.algo);
+    // filtre "Shopify uniquement" : les autres restent en stock pour quand le filtre est retiré
+    if (S.shopify) { const keep = fresh.filter(a => a.shopify); fresh.length = 0; fresh.push(...keep); }
     // diversité : pas plus de 2 ads du même annonceur d'affilée dans un lot
     const picked = [], perPage = {};
     for (const ad of fresh) {
@@ -210,7 +263,10 @@
       }
       hideStatus();
       picked.forEach(addSlide);
-      if (!feedAds.length) showStatus(`<div>Aucune ad trouvée. Ajoute d'autres centres d'intérêt dans Réglages.</div>`);
+      if (!feedAds.length) showStatus(S.shopify
+        ? `<div>Pas encore de boutique Shopify dans ces résultats.</div><button class="primary" id="retry">Chercher encore</button>`
+        : `<div>Aucune ad trouvée. Ajoute d'autres centres d'intérêt dans Réglages.</div>`);
+      $('#retry') && ($('#retry').onclick = () => refill());
       // on garde toujours un stock d'avance, récupéré en arrière-plan
       if (remaining < 10) fetchBatch().catch(() => {});
     } finally { filling = false; }
@@ -242,6 +298,7 @@
     const hot = ad.activeDays >= 30;
     const badges = [
       ad.reach != null ? `<span class="badge reach">👁 ${fmtNum(ad.reach)} touchées</span>` : '',
+      ad.shopify ? `<span class="badge shop">🛍 Shopify</span>` : '',
       ad.isActive
         ? `<span class="badge ${hot ? 'hot' : ''}">${hot ? '🔥 ' : ''}active ${fmtDays(ad.activeDays)}</span>`
         : `<span class="badge off">⏸ inactive · a tourné ${fmtDays(ad.activeDays)}</span>`,
@@ -531,6 +588,7 @@
         <dt>Lancée le</dt><dd>${d} (${fmtDays(ad.activeDays)} de diffusion)</dd>
         <dt>Couverture UE</dt><dd>${ad.reach != null ? ad.reach.toLocaleString('fr-FR') + ' personnes touchées' : '<span class="muted">non demandée (tri « Plus vues ») ou hors UE</span>'}</dd>
         <dt>Versions</dt><dd>${ad.versionCount}</dd>
+        <dt>Boutique</dt><dd>${ad.shopify ? '🛍 Shopify' : ad.shopify === false ? 'Pas Shopify' : '—'}</dd>
         <dt>Catégorie</dt><dd>${esc(ad.pageCategory) || '—'}</dd>
         <dt>Plateformes</dt><dd>${esc((ad.platforms || []).join(', ')) || '—'}</dd>
         <dt>Bouton</dt><dd>${esc(ad.ctaText) || '—'}</dd>
@@ -767,7 +825,7 @@
     for (const k of Object.keys(FILTERS)) {
       // pays en version courte pour que les 3 boutons tiennent sur la largeur de l'iPhone
       const l = k === 'country' ? label(k).split(' ')[0] + ' ' + (S.country === 'ALL' ? 'Tous' : S.country) : label(k);
-      $(`#f-${k}`).textContent = l + ' ▾';
+      $(`#f-${k}`).textContent = l;
     }
   }
   function openFilter(kind) {
@@ -789,6 +847,14 @@
     };
   }
   for (const k of Object.keys(FILTERS)) $(`#f-${k}`).onclick = () => openFilter(k);
+  function renderShopBtn() { $('#f-shopify').classList.toggle('on', S.shopify); }
+  $('#f-shopify').onclick = () => {
+    Store.set('shopify', !S.shopify);
+    renderShopBtn();
+    toast(S.shopify ? '🛍 Boutiques Shopify uniquement' : 'Tous les sites');
+    resetFeed();
+  };
+  renderShopBtn();
   renderFilterBar();
 
   function onboarding() {

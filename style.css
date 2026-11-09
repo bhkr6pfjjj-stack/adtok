@@ -63,11 +63,13 @@ input, select, textarea { font: inherit; color: var(--fg); background: var(--car
   display: flex; justify-content: center; gap: 4px; }
 .carousel-dots i { width: 18px; height: 3px; border-radius: 2px; background: rgba(255,255,255,.35); }
 .carousel-dots i.on { background: #fff; }
-.filterbar { position: absolute; z-index: 4; top: calc(12px + env(safe-area-inset-top)); left: 10px; right: 60px;
-  display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.filterbar { position: absolute; z-index: 4; top: calc(12px + env(safe-area-inset-top)); left: 8px; right: 56px;
+  display: flex; gap: 5px; overflow-x: auto; scrollbar-width: none; }
 .filterbar::-webkit-scrollbar { display: none; }
-.filterbar button { flex: none; font-size: 13px; font-weight: 600; padding: 7px 11px; border-radius: 99px;
+.filterbar button { flex: none; font-size: 12px; font-weight: 600; padding: 7px 8px; border-radius: 99px;
   background: rgba(0,0,0,.45); border: 1px solid rgba(255,255,255,.18); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.filterbar button.toggle.on { background: #95bf47; border-color: #95bf47; color: #000; }
+.badge.shop { background: #95bf47; color: #000; font-weight: 600; }
 .opt-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .opt { text-align: left; padding: 12px 14px; border-radius: 12px; background: #262626; border: 1px solid transparent; }
 .opt b { display: block; font-size: 15px; }
