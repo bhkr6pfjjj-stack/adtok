@@ -1,0 +1,7 @@
+name = "adtok-relais"
+main = "index.js"
+compatibility_date = "2026-10-01"
+
+# Secrets (à définir une fois, jamais dans ce fichier) :
+#   npx wrangler secret put META_TOKEN
+#   npx wrangler secret put APP_KEY

@@ -13,7 +13,55 @@
     get shopify() { return Store.get('shopify', false); },
     get interests() { return Store.get('interests', null); },
     get muted() { return Store.get('muted', true); },
+    get source() { return Store.get('source', 'apify'); },    // apify | meta (relais gratuit)
+    get relayUrl() { return (Store.get('relayUrl', '') || '').replace(/\/+$/, ''); },
+    get relayKey() { return Store.get('relayKey', ''); },
   };
+  const useMeta = () => S.source === 'meta' && !!S.relayUrl && !!S.relayKey;
+  const configured = () => useMeta() || !!S.token;
+
+  // ---------- source gratuite : API officielle Meta via ton relais Cloudflare ----------
+  async function relay(path, params) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 60000);
+    try {
+      const res = await fetch(`${S.relayUrl}${path}?${new URLSearchParams(params)}`, {
+        headers: { 'X-App-Key': S.relayKey }, signal: ctrl.signal,
+      });
+      let d = {};
+      try { d = await res.json(); } catch {}
+      if (res.status === 401) throw new Error('Clé du relais incorrecte : vérifie-la dans Réglages.');
+      if (!res.ok || d.error) throw new Error(d.error || 'Le relais a répondu ' + res.status);
+      return d;
+    } catch (e) {
+      if (e.name === 'AbortError') throw new Error('Le relais met trop de temps à répondre.');
+      if (e instanceof TypeError) throw new Error('Relais injoignable : vérifie son adresse dans Réglages.');
+      throw e;
+    } finally { clearTimeout(timer); }
+  }
+  // Avec l'API Meta, chaque recherche reprend là où elle s'était arrêtée (curseur) : gratuit, donc on va plus loin.
+  async function fetchMeta(qs, fk, isSearch) {
+    const cursors = Store.get('cursors', {});
+    const res = await Promise.all(qs.map(async (q) => {
+      const ck = (q.type === 'page' ? 'page:' + q.value : q.value) + '|' + fk;
+      const p = { country: S.country, status: S.status, media: S.media, limit: isSearch ? 40 : 25 };
+      if (q.type === 'page') p.page_ids = q.value;
+      else if (q.type === 'url') p.q = decodeURIComponent((new URL(q.value).pathname.split('/').filter(Boolean)[0] || '')).replace(/[-_.]/g, ' ');
+      else p.q = q.value;
+      if (S.sort === 'recent') p.date_min = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+      if (cursors[ck]) p.after = cursors[ck];
+      const d = await relay('/search', p);
+      if (d.after) cursors[ck] = d.after; else delete cursors[ck];
+      return { items: d.items || [], done: !d.after };
+    }));
+    Store.set('cursors', cursors);
+    const items = res.flatMap(r => r.items);
+    if (isSearch && res.every(r => r.done)) search.exhausted = true;
+    if (items.length && !items.some(i => i.mediaFound)) {
+      throw new Error("Le relais reçoit bien les ads mais ne trouve plus les vidéos (Meta a dû changer ses pages d'aperçu). Repasse sur Apify dans Réglages en attendant.");
+    }
+    return items;
+  }
 
   // ======================================================================
   // Récupération des ads
@@ -94,11 +142,13 @@
         const m = /view_all_page_id=(\d+)/.exec(raw.searchUrl || '');
         if (m && pages.includes(m[1])) return 'page:' + m[1];
         if (raw.searchTerm && terms.includes(raw.searchTerm)) return raw.searchTerm;
+        if (raw.searchTerm && raw.searchTerm.startsWith('page:') && pages.includes(raw.searchTerm.slice(5))) return raw.searchTerm;
         if (search.q && !forced) return 'search:' + search.q;
         return terms[0] || (pages[0] ? 'page:' + pages[0] : '');
       };
       try {
-        const items = await apify(input);
+        const meta = useMeta();
+        const items = meta ? await fetchMeta(qs, fk, !!(search.q && !forced)) : await apify(input);
         // en recherche, on montre tout ce qui correspond (même déjà vu ailleurs), sauf ce qui est déjà dans ce feed
         const seenIds = search.q && !forced
           ? new Set(feedAds.flatMap(a => [a.id, a.dedup]))
@@ -114,7 +164,7 @@
           fresh.push(ad);
         }
         // fin des résultats de la recherche : moins d'ads que demandé, ou plus rien de nouveau
-        if (search.q && !forced && fk === filterKey() && (items.length < input.maxAds || search.max >= 200)) search.exhausted = true;
+        if (!meta && search.q && !forced && fk === filterKey() && (items.length < input.maxAds || search.max >= 200)) search.exhausted = true;
         await tagShopify(fresh);
         await DB.putMany('pool', fresh);
         return { query: key, count: fresh.length, total: items.length };
@@ -222,9 +272,17 @@
 
   // Les liens vidéo Facebook expirent après quelques jours : on redemande des liens neufs pour une ad du dossier.
   async function refreshAd(ad) {
-    const items = await apify({ urls: [{ url: ad.adLibraryUrl }], maxAds: 1, outputFormat: 'clean' });
-    const raw = items.find(i => String(i.adArchiveId) === ad.id) || items[0];
-    const fresh = raw && normalize(raw, ad.searchTerm);
+    let fresh;
+    if (useMeta()) {
+      // gratuit : le relais relit la page d'aperçu de l'ad
+      const m = await relay('/ad', { id: ad.id });
+      const media = m.found ? pickMedia({ videos: m.videos, imageUrls: m.imageUrls }) : [];
+      if (media.length) fresh = { ...ad, media, avatar: m.pageProfilePictureUrl || ad.avatar };
+    } else {
+      const items = await apify({ urls: [{ url: ad.adLibraryUrl }], maxAds: 1, outputFormat: 'clean' });
+      const raw = items.find(i => String(i.adArchiveId) === ad.id) || items[0];
+      fresh = raw && normalize(raw, ad.searchTerm);
+    }
     if (!fresh) throw new Error("Cette ad n'est plus disponible dans la Ad Library");
     for (const store of ['saved', 'liked']) {
       const cur = await DB.get(store, ad.id);
@@ -316,7 +374,11 @@
       $('#retry') && ($('#retry').onclick = () => refill());
       $('#end-search') && ($('#end-search').onclick = () => setSearch(''));
       // on garde toujours un stock d'avance, récupéré en arrière-plan
-      if (remaining < 10 && !(search.q && search.exhausted)) fetchBatch().catch(() => {});
+      if (remaining < 10 && !(search.q && search.exhausted)) {
+        const q = search.q;
+        // si ce chargement atteint la fin des résultats, on relance l'affichage pour montrer la carte de fin
+        fetchBatch().then(() => { if (q && search.q === q && search.exhausted) setTimeout(refill, 0); }).catch(() => {});
+      }
     } finally { filling = false; }
   }
 
@@ -814,6 +876,10 @@
   // ======================================================================
   function renderSettings() {
     $('#set-token').value = S.token;
+    $('#set-source').value = S.source;
+    $('#set-relay-url').value = S.relayUrl;
+    $('#set-relay-key').value = S.relayKey;
+    $('#relay-fields').classList.toggle('hidden', S.source !== 'meta');
     $('#set-interests').value = (S.interests || Algo.DEFAULT_INTERESTS).join('\n');
     const terms = Algo.learnedTerms(24);
     $('#learned').innerHTML = terms.length
@@ -822,10 +888,33 @@
     const p = Algo.profile();
     $('#stats').textContent = `${p.events} interactions apprises · ${likedIds.size} likes · ${savedIds.size} enregistrées · ${Store.get('runs', 0)} lancements Apify (≈ ${(Store.get('runs', 0) * 0.1).toFixed(2).replace('.', ',')} $)`;
   }
+  $('#set-source').onchange = () => $('#relay-fields').classList.toggle('hidden', $('#set-source').value !== 'meta');
   $('#save-settings').onclick = async () => {
-    Store.set('token', $('#set-token').value.trim());
+    const before = [S.source, S.relayUrl].join();
+    const v = {
+      token: $('#set-token').value.trim().replace(/\s+/g, ''), source: $('#set-source').value,
+      relayUrl: $('#set-relay-url').value.trim(), relayKey: $('#set-relay-key').value.trim(),
+    };
+    // on vérifie avant d'enregistrer, pour ne jamais laisser l'app sans source valable
+    if (v.source === 'meta' && !(v.relayUrl && v.relayKey)) { toast('Renseigne l\'adresse et la clé du relais'); return; }
+    if (v.source === 'apify' && !v.token) { toast('Colle ton token Apify'); return; }
+    for (const [k, val] of Object.entries(v)) Store.set(k, val);
     Store.set('interests', $('#set-interests').value.split('\n').map(s => s.trim()).filter(Boolean));
     toast('Réglages enregistrés');
+    // nouvelle source : on repart sur un stock neuf
+    if (before !== [S.source, S.relayUrl].join()) { await DB.clear('pool'); Store.set('cursors', {}); resetFeed(); }
+  };
+  $('#test-relay').onclick = async () => {
+    const url = $('#set-relay-url').value.trim(), key = $('#set-relay-key').value.trim();
+    if (!url || !key) return toast('Adresse et clé du relais d\'abord');
+    Store.set('relayUrl', url); Store.set('relayKey', key);
+    toast('Test en cours…');
+    try {
+      await relay('/ping', {});
+      const d = await relay('/search', { q: 'serum', country: 'FR', status: 'active', media: 'video', limit: 3 });
+      const withMedia = (d.items || []).filter(i => i.mediaFound).length;
+      toast(`✓ Relais OK : ${(d.items || []).length} ads, ${withMedia} avec vidéo`);
+    } catch (e) { toast(e.message); }
   };
   $('#reset-algo').onclick = async () => {
     if (!confirm("Effacer ce que l'algo a appris et l'historique des ads vues ? Ton dossier et tes likes sont conservés.")) return;
@@ -987,9 +1076,11 @@
     };
     $('#ob-go').onclick = () => {
       const tok = $('#ob-token').value.trim().replace(/\s+/g, '');
-      if (!tok) { toast('Colle ton token Apify'); return; }
+      const rUrl = $('#ob-relay-url').value.trim(), rKey = $('#ob-relay-key').value.trim();
+      if (!tok && !(rUrl && rKey)) { toast('Colle ton token Apify (ou les infos du relais)'); return; }
       if (!chosen.size) { toast('Choisis au moins un intérêt'); return; }
-      Store.set('token', tok);
+      if (tok) Store.set('token', tok);
+      if (rUrl && rKey) { Store.set('relayUrl', rUrl); Store.set('relayKey', rKey); Store.set('source', 'meta'); }
       Store.set('interests', [...chosen]);
       ob.classList.add('hidden');
       refill();
@@ -1002,15 +1093,15 @@
   }
 
   async function init() {
-    const hadToken = !!S.token;
+    const hadToken = configured();
     await Store.restore();
-    if (!hadToken && S.token) {
+    if (!hadToken && configured()) {
       // réglages récupérés depuis la copie de secours : on rafraîchit ce qui avait été lu au chargement
       const p = Store.get('profile', null); if (p) Algo.setProfile(p);
       renderFilterBar(); renderShopBtn();
     }
     await loadSets();
-    if (!S.token) onboarding(); else refill();
+    if (!configured()) onboarding(); else refill();
     if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   }
   init();

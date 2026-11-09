@@ -176,3 +176,8 @@ button.danger { border: 1px solid #5a1d27; color: #ff6b81; padding: 10px; border
 .paste-row { display: flex; gap: 8px; }
 .paste-row input { flex: 1; min-width: 0; }
 .paste-row button { flex: none; padding: 0 14px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); font-weight: 600; }
+.relay-fields { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 12px; background: #111; border: 1px solid var(--line); }
+.relay-fields button { background: var(--card); border: 1px solid var(--line); padding: 10px; border-radius: 10px; }
+.ob-relay { color: var(--muted); }
+.ob-relay summary { cursor: pointer; padding: 4px 0; }
+.ob-relay input { margin-top: 8px; }

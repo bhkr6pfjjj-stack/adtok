@@ -51,7 +51,7 @@ const Store = {
     // la clé Apify et les réglages essentiels sont aussi copiés dans IndexedDB, au cas où l'un des deux serait vidé
     if (Store.BACKUP.includes(key)) DB.put('kv', { id: key, v: val }).catch(() => {});
   },
-  BACKUP: ['token', 'interests', 'country', 'status', 'sort', 'media', 'shopify', 'profile'],
+  BACKUP: ['token', 'source', 'relayUrl', 'relayKey', 'interests', 'country', 'status', 'sort', 'media', 'shopify', 'profile'],
   // au démarrage : si localStorage a été vidé, on recopie depuis IndexedDB
   async restore() {
     try {

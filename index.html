@@ -59,10 +59,26 @@
   <section id="view-settings" class="view">
     <header class="top"><h1>Réglages</h1></header>
     <div class="settings">
+      <label>Source des ads
+        <select id="set-source">
+          <option value="apify">Apify (payant à l'usage, ~5 $ offerts/mois)</option>
+          <option value="meta">Meta gratuit (via ton relais)</option>
+        </select>
+      </label>
       <label>Token Apify
         <input id="set-token" type="password" autocomplete="off" placeholder="apify_api_...">
         <small>console.apify.com → Settings → API &amp; Integrations</small>
       </label>
+      <div id="relay-fields" class="relay-fields">
+        <label>Adresse du relais
+          <input id="set-relay-url" type="url" autocomplete="off" placeholder="https://adtok-relais.xxx.workers.dev">
+        </label>
+        <label>Clé du relais
+          <input id="set-relay-key" type="password" autocomplete="off" placeholder="mot de passe du relais">
+        </label>
+        <button id="test-relay" type="button">Tester le relais</button>
+        <small class="muted">Avec la source Meta, le token Apify reste utile en secours si tu repasses sur Apify.</small>
+      </div>
       <label>Mes centres d'intérêt <small>(un par ligne, ils servent de point de départ à l'algo)</small>
         <textarea id="set-interests" rows="6"></textarea>
       </label>
@@ -92,6 +108,11 @@
       </div>
       <small>console.apify.com → Settings → API &amp; Integrations</small>
     </label>
+    <details class="ob-relay">
+      <summary>J'ai un relais Meta gratuit</summary>
+      <input id="ob-relay-url" type="url" autocomplete="off" placeholder="Adresse du relais (https://…workers.dev)">
+      <input id="ob-relay-key" type="password" autocomplete="off" placeholder="Clé du relais">
+    </details>
     <p class="muted">Choisis ce qui t'intéresse :</p>
     <div id="ob-chips" class="chips selectable"></div>
     <input id="ob-custom" placeholder="Ajouter un mot-clé + Entrée">
