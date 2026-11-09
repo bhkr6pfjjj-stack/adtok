@@ -7,6 +7,8 @@
   const S = {
     get token() { return Store.get('token', ''); },
     get country() { return Store.get('country', 'FR'); },
+    get status() { return Store.get('status', 'active'); },   // active | inactive | all
+    get sort() { return Store.get('sort', 'algo'); },         // algo | reach | recent | oldest
     get media() { return Store.get('media', 'video'); },
     get interests() { return Store.get('interests', null); },
     get muted() { return Store.get('muted', true); },
@@ -40,35 +42,62 @@
       bodyText: raw.bodyText || '', headline: raw.headline || '', linkDescription: raw.linkDescription || '',
       linkUrl: raw.linkUrl || '', linkDomain: raw.linkDomain || '', ctaText: raw.ctaText || '',
       activeDays: raw.activeDays || 0, versionCount: raw.versionCount || 1, startDate: raw.startDate,
-      isActive: raw.isActive, platforms: raw.platforms || [], adLibraryUrl: raw.adLibraryUrl ||
+      isActive: raw.isActive !== false, endDate: raw.endDate || raw.lastSeenDate || null,
+      reach: typeof raw.euReach === 'number' ? raw.euReach : null,
+      platforms: raw.platforms || [], adLibraryUrl: raw.adLibraryUrl ||
         `https://www.facebook.com/ads/library/?id=${raw.adArchiveId}`,
       mediaType: media[0].type, media, searchTerm: queryKey, fetchedAt: Date.now(),
     };
   }
 
+  // Pays de l'UE (+ RU/UK) : seuls pays où Meta publie la couverture (nb de personnes touchées) des ads commerciales
+  const EU = new Set('AT BE BG HR CY CZ DK EE FI FR DE GR HU IE IT LV LT LU MT NL PL PT RO SK SI ES SE GB'.split(' '));
+  const reachAvailable = () => S.country === 'ALL' || EU.has(S.country);
+
+  function pageLibraryUrl(pageId) {
+    const p = new URLSearchParams({ active_status: S.status, ad_type: 'all', country: S.country, view_all_page_id: pageId, media_type: S.media });
+    return 'https://www.facebook.com/ads/library/?' + p;
+  }
+
   let fetching = null;
+  // Un lancement Apify coûte ~0,05 $ quel que soit le nombre d'ads : on groupe 3 recherches par lancement.
   async function fetchBatch(forced) {
     if (fetching) return fetching;
     fetching = (async () => {
+      const fk = filterKey(); // figé au départ : si les filtres changent pendant la recherche, ce lot sera ignoré
       const interests = S.interests || Algo.DEFAULT_INTERESTS;
-      const q = forced || Algo.nextQuery(interests);
-      const key = q.type === 'page' ? 'page:' + q.value : q.value;
-      const input = { country: S.country, mediaType: S.media, activeStatus: 'active', outputFormat: 'clean', maxAds: 24 };
-      if (q.type === 'page') {
-        const c = S.country === 'ALL' ? 'ALL' : S.country;
-        input.urls = [{ url: `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${c}&view_all_page_id=${q.value}&media_type=${S.media}` }];
-      } else {
-        input.searchTerms = [q.value];
-        input.searchType = 'keyword_unordered';
+      const qs = [];
+      if (forced) qs.push(forced);
+      else for (let i = 0; i < 3; i++) {
+        const q = Algo.nextQuery(interests);
+        const k = q.type === 'page' ? 'page:' + q.value : q.value;
+        if (qs.some(x => (x.type === 'page' ? 'page:' + x.value : x.value) === k)) continue;
+        qs.push(q); Algo.markQuery(k);
       }
-      Algo.markQuery(key);
+      if (forced) Algo.markQuery(forced.type === 'page' ? 'page:' + forced.value : forced.value);
+      const terms = qs.filter(q => q.type === 'term').map(q => q.value);
+      const pages = qs.filter(q => q.type === 'page').map(q => q.value);
+      const input = { country: S.country, mediaType: S.media, activeStatus: S.status, outputFormat: 'clean',
+        maxAds: forced ? 20 : 25, searchType: 'keyword_unordered' };
+      if (terms.length) input.searchTerms = terms;
+      if (pages.length) input.urls = pages.map(id => ({ url: pageLibraryUrl(id) }));
+      if (S.sort === 'reach' && reachAvailable()) input.includeAdDetails = true;
+      if (S.sort === 'recent') input.startDateMin = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+      const keyFor = (raw) => {
+        const m = /view_all_page_id=(\d+)/.exec(raw.searchUrl || '');
+        if (m && pages.includes(m[1])) return 'page:' + m[1];
+        if (raw.searchTerm && terms.includes(raw.searchTerm)) return raw.searchTerm;
+        return terms[0] || (pages[0] ? 'page:' + pages[0] : '');
+      };
       try {
         const items = await apify(input);
         const seenIds = new Set(await DB.keys('seen'));
         const poolIds = new Set(await DB.keys('pool'));
         const fresh = [];
+        const key = forced ? (forced.type === 'page' ? 'page:' + forced.value : forced.value) : qs.map(q => q.value).join(' + ');
         for (const raw of items) {
-          const ad = normalize(raw, key);
+          const ad = normalize(raw, keyFor(raw));
+          if (ad) ad.filters = fk;
           if (!ad || seenIds.has(ad.id) || seenIds.has(ad.dedup) || poolIds.has(ad.id)) continue;
           seenIds.add(ad.dedup);
           fresh.push(ad);
@@ -80,6 +109,11 @@
       }
     })();
     return fetching;
+  }
+
+  function filterKey() {
+    // la couverture n'est demandée qu'en tri "plus vues" : les autres tris partagent le même stock
+    return [S.country, S.status, S.media, S.sort === 'reach' ? 'reach' : S.sort === 'recent' ? 'recent' : 'std'].join('|');
   }
 
   async function apify(input) {
@@ -120,10 +154,20 @@
     const now = Date.now();
     const fresh = [], stale = [];
     // les liens vidéo Facebook expirent après quelques jours : on jette le stock trop vieux
-    for (const ad of pool) (now - ad.fetchedAt > 1000 * 60 * 60 * 48 ? stale : fresh).push(ad);
+    // + on jette ce qui a été récupéré avec d'autres filtres (pays, statut, tri)
+    const fk = filterKey();
+    for (const ad of pool) (now - ad.fetchedAt > 1000 * 60 * 60 * 48 || (ad.filters && ad.filters !== fk) ? stale : fresh).push(ad);
     for (const ad of stale) DB.del('pool', ad.id);
     fresh.forEach(ad => ad._s = Algo.score(ad));
-    fresh.sort((a, b) => b._s - a._s);
+    const t = (ad) => (ad.startDate ? Date.parse(ad.startDate) : 0) || 0;
+    const sorters = {
+      algo: (a, b) => b._s - a._s,
+      // couverture UE ; hors UE (pas de chiffre) on se rabat sur la durée de diffusion
+      reach: (a, b) => ((b.reach ?? -1) - (a.reach ?? -1)) || (b.activeDays - a.activeDays) || (b._s - a._s),
+      recent: (a, b) => (t(b) - t(a)) || (b._s - a._s),
+      oldest: (a, b) => (t(a) - t(b)) || (b._s - a._s),
+    };
+    fresh.sort(sorters[S.sort] || sorters.algo);
     // diversité : pas plus de 2 ads du même annonceur d'affilée dans un lot
     const picked = [], perPage = {};
     for (const ad of fresh) {
@@ -182,12 +226,26 @@
 
   function esc(s) { return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
   function fmtDays(d) { return d >= 365 ? Math.floor(d / 365) + ' an' + (d >= 730 ? 's' : '') : d + ' j'; }
+  function fmtNum(n) {
+    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace('.', ',') + ' M';
+    if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace('.', ',') + ' k';
+    return String(n);
+  }
+  function fmtDate(s) {
+    if (!s) return '';
+    const d = new Date(s);
+    return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: d.getFullYear() === new Date().getFullYear() ? undefined : '2-digit' });
+  }
 
   function slideHTML(ad, opts = {}) {
     const liked = likedIds.has(ad.id), saved = savedIds.has(ad.id);
     const hot = ad.activeDays >= 30;
     const badges = [
-      `<span class="badge ${hot ? 'hot' : ''}">${hot ? '🔥 ' : ''}active ${fmtDays(ad.activeDays)}</span>`,
+      ad.reach != null ? `<span class="badge reach">👁 ${fmtNum(ad.reach)} touchées</span>` : '',
+      ad.isActive
+        ? `<span class="badge ${hot ? 'hot' : ''}">${hot ? '🔥 ' : ''}active ${fmtDays(ad.activeDays)}</span>`
+        : `<span class="badge off">⏸ inactive · a tourné ${fmtDays(ad.activeDays)}</span>`,
+      ad.startDate ? `<span class="badge">lancée ${fmtDate(ad.startDate)}</span>` : '',
       ad.versionCount > 1 ? `<span class="badge ${ad.versionCount >= 5 ? 'gold' : ''}">${ad.versionCount} versions</span>` : '',
       ad.linkDomain ? `<span class="badge">${esc(ad.linkDomain)}</span>` : '',
     ].join('');
@@ -469,7 +527,9 @@
     $('#sheet-body').innerHTML = `
       <h3>${esc(ad.pageName)}</h3>
       <dl class="kv">
-        <dt>Active depuis</dt><dd>${d} (${fmtDays(ad.activeDays)})</dd>
+        <dt>Statut</dt><dd>${ad.isActive ? '🟢 Active' : '⏸ Inactive' + (ad.endDate ? ' (vue pour la dernière fois le ' + new Date(ad.endDate).toLocaleDateString('fr-FR') + ')' : '')}</dd>
+        <dt>Lancée le</dt><dd>${d} (${fmtDays(ad.activeDays)} de diffusion)</dd>
+        <dt>Couverture UE</dt><dd>${ad.reach != null ? ad.reach.toLocaleString('fr-FR') + ' personnes touchées' : '<span class="muted">non demandée (tri « Plus vues ») ou hors UE</span>'}</dd>
         <dt>Versions</dt><dd>${ad.versionCount}</dd>
         <dt>Catégorie</dt><dd>${esc(ad.pageCategory) || '—'}</dd>
         <dt>Plateformes</dt><dd>${esc((ad.platforms || []).join(', ')) || '—'}</dd>
@@ -622,7 +682,6 @@
   // ======================================================================
   function renderSettings() {
     $('#set-token').value = S.token;
-    $('#set-country').value = S.country;
     $('#set-media').value = S.media;
     $('#set-interests').value = (S.interests || Algo.DEFAULT_INTERESTS).join('\n');
     const terms = Algo.learnedTerms(24);
@@ -630,16 +689,15 @@
       ? terms.map(([t, w]) => `<span class="chip">${esc(t)}<b>${w.toFixed(1)}</b></span>`).join('')
       : '<span class="muted">Like et enregistre des ads : l\'algo affichera ici ce qu\'il a compris de tes goûts.</span>';
     const p = Algo.profile();
-    $('#stats').textContent = `${p.events} interactions apprises · ${likedIds.size} likes · ${savedIds.size} enregistrées · ${Store.get('runs', 0)} recherches Apify`;
+    $('#stats').textContent = `${p.events} interactions apprises · ${likedIds.size} likes · ${savedIds.size} enregistrées · ${Store.get('runs', 0)} lancements Apify (≈ ${(Store.get('runs', 0) * 0.1).toFixed(2).replace('.', ',')} $)`;
   }
   $('#save-settings').onclick = async () => {
-    const before = [S.country, S.media].join();
+    const before = S.media;
     Store.set('token', $('#set-token').value.trim());
-    Store.set('country', $('#set-country').value);
     Store.set('media', $('#set-media').value);
     Store.set('interests', $('#set-interests').value.split('\n').map(s => s.trim()).filter(Boolean));
     toast('Réglages enregistrés');
-    if (before !== [S.country, S.media].join()) { await DB.clear('pool'); resetFeed(); }
+    if (before !== S.media) { await DB.clear('pool'); resetFeed(); }
   };
   $('#reset-algo').onclick = async () => {
     if (!confirm("Effacer ce que l'algo a appris et l'historique des ads vues ? Ton dossier et tes likes sont conservés.")) return;
@@ -682,8 +740,56 @@
   function resetFeed() {
     $$('.slide', feedEl).forEach(s => { unmount(s); observer.unobserve(s); });
     feedEl.innerHTML = ''; feedAds = []; current = null;
+    feedEl.scrollTop = 0;
     refill();
   }
+
+  // ---------- filtres du feed : pays, tri, statut ----------
+  const FILTERS = {
+    country: { title: 'Pays des ads', opts: [
+      ['FR', '🇫🇷 France'], ['ALL', '🌍 Tous les pays'], ['BE', '🇧🇪 Belgique'], ['CH', '🇨🇭 Suisse'], ['CA', '🇨🇦 Canada'],
+      ['US', '🇺🇸 États-Unis'], ['GB', '🇬🇧 Royaume-Uni'], ['DE', '🇩🇪 Allemagne'], ['ES', '🇪🇸 Espagne'], ['IT', '🇮🇹 Italie'],
+      ['NL', '🇳🇱 Pays-Bas'], ['PT', '🇵🇹 Portugal'], ['PL', '🇵🇱 Pologne'], ['SE', '🇸🇪 Suède'], ['AU', '🇦🇺 Australie'],
+      ['MA', '🇲🇦 Maroc'], ['DZ', '🇩🇿 Algérie'], ['TN', '🇹🇳 Tunisie'], ['AE', '🇦🇪 Émirats'], ['SA', '🇸🇦 Arabie saoudite']] },
+    sort: { title: 'Trier par', opts: [
+      ['algo', '✨ Pour toi', "L'algo choisit selon tes goûts"],
+      ['reach', '👁 Plus vues', 'Nombre de personnes touchées (chiffre publié par Meta pour les pays UE uniquement)'],
+      ['recent', '🆕 Plus récentes', 'Lancées ces 30 derniers jours, les plus récentes d\'abord'],
+      ['oldest', '⏳ Plus anciennes', 'Celles qui tournent depuis le plus longtemps (souvent des winners)']] },
+    status: { title: 'Statut', opts: [
+      ['active', '🟢 Actives', 'En diffusion en ce moment'], ['inactive', '⏸ Inactives', 'Arrêtées'], ['all', '◐ Toutes', 'Actives et inactives']] },
+  };
+  function label(kind) {
+    const o = FILTERS[kind].opts.find(x => x[0] === S[kind]) || FILTERS[kind].opts[0];
+    return o[1];
+  }
+  function renderFilterBar() {
+    for (const k of Object.keys(FILTERS)) {
+      // pays en version courte pour que les 3 boutons tiennent sur la largeur de l'iPhone
+      const l = k === 'country' ? label(k).split(' ')[0] + ' ' + (S.country === 'ALL' ? 'Tous' : S.country) : label(k);
+      $(`#f-${k}`).textContent = l + ' ▾';
+    }
+  }
+  function openFilter(kind) {
+    const f = FILTERS[kind];
+    $('#sheet-body').innerHTML = `<h3>${f.title}</h3>
+      ${kind === 'sort' && !reachAvailable() ? '<p class="muted">Hors UE, Meta ne publie pas la couverture : « Plus vues » classe alors par durée de diffusion.</p>' : ''}
+      <div class="opt-list">${f.opts.map(([v, l, d]) =>
+        `<button class="opt ${S[kind] === v ? 'on' : ''}" data-v="${v}"><b>${l}</b>${d ? `<small>${esc(d)}</small>` : ''}</button>`).join('')}</div>`;
+    $('#sheet').classList.remove('hidden');
+    $('#sheet-body').onclick = async (e) => {
+      const b = e.target.closest('.opt'); if (!b) return;
+      $('#sheet-body').onclick = null;
+      closeSheet();
+      if (S[kind] === b.dataset.v) return;
+      Store.set(kind, b.dataset.v);
+      renderFilterBar();
+      toast(label(kind));
+      resetFeed();
+    };
+  }
+  for (const k of Object.keys(FILTERS)) $(`#f-${k}`).onclick = () => openFilter(k);
+  renderFilterBar();
 
   function onboarding() {
     const ob = $('#onboarding');

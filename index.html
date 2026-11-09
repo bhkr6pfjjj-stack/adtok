@@ -20,6 +20,11 @@
   <!-- FEED -->
   <section id="view-feed" class="view active">
     <div id="feed" class="feed"></div>
+    <div class="filterbar">
+      <button id="f-country"></button>
+      <button id="f-sort"></button>
+      <button id="f-status"></button>
+    </div>
     <div id="feed-status" class="feed-status hidden"></div>
     <button id="mute-btn" class="mute-btn" aria-label="Son">🔇</button>
   </section>
@@ -45,14 +50,6 @@
       <label>Token Apify
         <input id="set-token" type="password" autocomplete="off" placeholder="apify_api_...">
         <small>console.apify.com → Settings → API &amp; Integrations</small>
-      </label>
-      <label>Pays des ads
-        <select id="set-country">
-          <option value="FR">France</option><option value="BE">Belgique</option><option value="CH">Suisse</option>
-          <option value="CA">Canada</option><option value="US">États-Unis</option><option value="GB">Royaume-Uni</option>
-          <option value="DE">Allemagne</option><option value="ES">Espagne</option><option value="IT">Italie</option>
-          <option value="ALL">Tous pays</option>
-        </select>
       </label>
       <label>Format
         <select id="set-media">

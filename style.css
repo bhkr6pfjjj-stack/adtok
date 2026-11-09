@@ -59,10 +59,22 @@ input, select, textarea { font: inherit; color: var(--fg); background: var(--car
 @keyframes pop { 0%{opacity:0;transform:translate(-50%,-50%) scale(.4)} 20%{opacity:1;transform:translate(-50%,-50%) scale(1.15)} 100%{opacity:0;transform:translate(-50%,-90%) scale(1)} }
 .progress { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: rgba(255,255,255,.15); }
 .progress i { display: block; height: 100%; width: 0; background: #fff; }
-.carousel-dots { position: absolute; top: calc(14px + env(safe-area-inset-top)); left: 0; right: 0;
+.carousel-dots { position: absolute; top: calc(58px + env(safe-area-inset-top)); left: 0; right: 0;
   display: flex; justify-content: center; gap: 4px; }
 .carousel-dots i { width: 18px; height: 3px; border-radius: 2px; background: rgba(255,255,255,.35); }
 .carousel-dots i.on { background: #fff; }
+.filterbar { position: absolute; z-index: 4; top: calc(12px + env(safe-area-inset-top)); left: 10px; right: 60px;
+  display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.filterbar::-webkit-scrollbar { display: none; }
+.filterbar button { flex: none; font-size: 13px; font-weight: 600; padding: 7px 11px; border-radius: 99px;
+  background: rgba(0,0,0,.45); border: 1px solid rgba(255,255,255,.18); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.opt-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.opt { text-align: left; padding: 12px 14px; border-radius: 12px; background: #262626; border: 1px solid transparent; }
+.opt b { display: block; font-size: 15px; }
+.opt small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.opt.on { border-color: var(--accent); background: #2e1a1f; }
+.badge.reach { background: #25f4ee; color: #000; font-weight: 600; }
+.badge.off { background: rgba(255,255,255,.28); }
 .mute-btn { position: absolute; top: calc(12px + env(safe-area-inset-top)); right: 12px; z-index: 4;
   font-size: 20px; width: 40px; height: 40px; border-radius: 50%; background: rgba(0,0,0,.35); }
 .feed-status { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
