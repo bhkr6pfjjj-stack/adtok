@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="AdTok">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<title>AdTok</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- FEED -->
+  <section id="view-feed" class="view active">
+    <div id="feed" class="feed"></div>
+    <div id="feed-status" class="feed-status hidden"></div>
+    <button id="mute-btn" class="mute-btn" aria-label="Son">🔇</button>
+  </section>
+
+  <!-- DOSSIER -->
+  <section id="view-saved" class="view">
+    <header class="top">
+      <h1>Mon dossier</h1>
+      <div class="seg">
+        <button data-list="saved" class="on">Enregistrées</button>
+        <button data-list="liked">Likées</button>
+      </div>
+    </header>
+    <input id="saved-search" class="search" type="search" placeholder="Rechercher (marque, mot, domaine)">
+    <div id="saved-grid" class="grid"></div>
+    <p id="saved-empty" class="empty hidden">Rien ici pour l'instant. Appuie sur 🔖 dans le feed pour enregistrer une ad.</p>
+  </section>
+
+  <!-- PROFIL / REGLAGES -->
+  <section id="view-settings" class="view">
+    <header class="top"><h1>Réglages</h1></header>
+    <div class="settings">
+      <label>Token Apify
+        <input id="set-token" type="password" autocomplete="off" placeholder="apify_api_...">
+        <small>console.apify.com → Settings → API &amp; Integrations</small>
+      </label>
+      <label>Pays des ads
+        <select id="set-country">
+          <option value="FR">France</option><option value="BE">Belgique</option><option value="CH">Suisse</option>
+          <option value="CA">Canada</option><option value="US">États-Unis</option><option value="GB">Royaume-Uni</option>
+          <option value="DE">Allemagne</option><option value="ES">Espagne</option><option value="IT">Italie</option>
+          <option value="ALL">Tous pays</option>
+        </select>
+      </label>
+      <label>Format
+        <select id="set-media">
+          <option value="video">Vidéos uniquement</option>
+          <option value="all">Vidéos + images</option>
+        </select>
+      </label>
+      <label>Mes centres d'intérêt <small>(un par ligne, ils servent de point de départ à l'algo)</small>
+        <textarea id="set-interests" rows="6"></textarea>
+      </label>
+      <button id="save-settings" class="primary">Enregistrer</button>
+
+      <h2>Ce que l'algo a appris</h2>
+      <div id="learned" class="chips"></div>
+      <p id="stats" class="muted"></p>
+
+      <h2>Sauvegarde</h2>
+      <div class="row">
+        <button id="export-btn">Exporter mes données</button>
+        <label class="btn-like">Importer<input id="import-file" type="file" accept="application/json" hidden></label>
+      </div>
+      <button id="reset-algo" class="danger">Réinitialiser l'algo (garde le dossier)</button>
+    </div>
+  </section>
+
+  <!-- ONBOARDING -->
+  <section id="onboarding" class="onboarding hidden">
+    <h1>AdTok</h1>
+    <p>Ton feed de pubs Meta, façon TikTok.</p>
+    <label>Token Apify
+      <input id="ob-token" type="password" autocomplete="off" placeholder="apify_api_...">
+      <small>console.apify.com → Settings → API &amp; Integrations</small>
+    </label>
+    <p class="muted">Choisis ce qui t'intéresse :</p>
+    <div id="ob-chips" class="chips selectable"></div>
+    <input id="ob-custom" placeholder="Ajouter un mot-clé + Entrée">
+    <button id="ob-go" class="primary">C'est parti</button>
+  </section>
+
+  <!-- VIEWER (dossier) -->
+  <section id="viewer" class="viewer hidden">
+    <button id="viewer-close" class="viewer-close">✕</button>
+    <div id="viewer-body" class="feed"></div>
+  </section>
+
+  <!-- DETAILS SHEET -->
+  <div id="sheet" class="sheet hidden">
+    <div class="sheet-inner">
+      <div class="sheet-handle"></div>
+      <div id="sheet-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <nav class="tabbar">
+    <button data-view="feed" class="on">🏠<span>Feed</span></button>
+    <button data-view="saved">🔖<span>Dossier</span></button>
+    <button data-view="settings">⚙️<span>Réglages</span></button>
+  </nav>
+</div>
+<script src="db.js"></script>
+<script src="algo.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
